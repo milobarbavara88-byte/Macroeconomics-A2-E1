@@ -17,16 +17,20 @@ source("prova1.R")
 
 The script downloads the data directly from **FRED**, prints all requested
 numbers to the console, and writes every figure to the `output/` folder.
-It requires internet access and the packages `quantmod`, `xts`, `zoo`, `vars`.
-Install them once with `install.packages(c("quantmod","xts","zoo","vars"))`;
+It requires internet access and the packages `fredr`, `xts`, `zoo`, `vars`.
+Install them once with `install.packages(c("fredr","xts","zoo","vars"))`;
 the script then loads them with plain `library()` calls. The Kalman filter is
 hand-coded, so no state-space package is needed.
 
-**Note on the FRED download.** The script sets
-`options(download.file.method = "libcurl", timeout = 300)` before downloading.
-This fixes the common *"cannot open the connection" / "non è possibile aprire la
-connessione"* error, which is caused by R defaulting to a download method that
-cannot open the HTTPS connection to FRED.
+**FRED API key (required).** The data is downloaded through the official FRED
+API with the `fredr` package, which avoids the *"cannot open the connection" /
+"non è possibile aprire la connessione"* error of `getSymbols`. Get a free key
+at <https://fredaccount.stlouisfed.org/apikeys> and paste it into the line near
+the top of `prova1.R`:
+
+```r
+fredr_set_key("PASTE_YOUR_FRED_API_KEY_HERE")
+```
 
 ### What the script does (mapping to the assignment)
 

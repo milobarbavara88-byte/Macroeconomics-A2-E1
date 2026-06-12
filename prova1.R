@@ -10,19 +10,19 @@
 # Load the four packages we need. Everything is out in the open: no helper
 # functions, no hidden tricks. If a package is not installed yet, run ONCE the
 # install line below (remove the leading #), then keep using the library lines:
-# install.packages(c("quantmod", "xts", "zoo", "vars"))
-library(quantmod)   # downloads the data from FRED (getSymbols)
+# install.packages(c("fredr", "xts", "zoo", "vars"))
+library(fredr)      # official FRED API access using a personal API key
 library(xts)        # tools for time series
 library(zoo)        # tools for time series (dates, plotting)
 library(vars)       # estimates the VAR model (Question 3)
 
 # IMPORTANT - this is what makes the FRED download work.
-# The error "cannot open the connection" / "non e' possibile aprire la
-# connessione" appears because, by default, R may use a download method that
-# cannot open the HTTPS connection to FRED. We force the robust "libcurl"
-# method and allow more time. With this single line getSymbols(src = "FRED")
-# downloads correctly.
-options(download.file.method = "libcurl", timeout = 300)
+# We download the data through the OFFICIAL FRED API using a personal API key
+# (free, from https://fredaccount.stlouisfed.org/apikeys). This goes through the
+# api.stlouisfed.org endpoint and avoids the "cannot open the connection" /
+# "non e' possibile aprire la connessione" error of getSymbols.
+# >>> PASTE YOUR OWN 32-character FRED API KEY between the quotes below. <<<
+fredr_set_key("PASTE_YOUR_FRED_API_KEY_HERE")
 
 set.seed(123)                                   # reproducibility
 dir.create("output", showWarnings = FALSE)      # folder where all figures are saved
@@ -33,14 +33,22 @@ lambda <- 0.0609                                # Nelson-Siegel decay parameter 
 # QUESTION 1 - DATA PREPARATION AND DESCRIPTIVE ANALYSIS
 # ==============================================================================
 
-# Download daily US Treasury constant-maturity yields from FRED.
+# Download daily US Treasury constant-maturity yields from the FRED API.
 
 fred_ids   <- c("DGS3MO", "DGS6MO", "DGS1", "DGS2", "DGS3", "DGS5", "DGS7", "DGS10")
 maturities <- c(3,        6,        12,     24,     36,     60,     84,     120)   # in MONTHS
-getSymbols(fred_ids, src = "FRED")              # creates one xts object per id in the workspace
+
+# Download each series with fredr() and turn it into an xts column. fredr()
+# returns a data frame with a 'date' and a 'value' column; we keep both. The
+# loop is fully visible: one iteration per maturity, nothing hidden.
+daily_list <- list()
+for (i in seq_along(fred_ids)) {
+  raw <- fredr(series_id = fred_ids[i])             # daily history of one maturity
+  daily_list[[i]] <- xts(raw$value, order.by = raw$date)
+}
 
 # Merge the eight daily series into one xts matrix, columns = maturities.
-daily <- do.call(merge, lapply(fred_ids, get))
+daily <- do.call(merge, daily_list)
 colnames(daily) <- as.character(maturities)
 
 # Convert daily yields to MONTHLY AVERAGES.
