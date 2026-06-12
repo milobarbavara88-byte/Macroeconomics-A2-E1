@@ -29,8 +29,13 @@ at <https://fredaccount.stlouisfed.org/apikeys> and paste it into the line near
 the top of `prova1.R`:
 
 ```r
-fredr_set_key("PASTE_YOUR_FRED_API_KEY_HERE")
+fredr_set_key("your_32_character_key")
 ```
+
+**Plots.** Each figure is drawn **on screen** (it appears in the RStudio *Plots*
+pane) and is then also saved as a `.png` in `output/` via `dev.copy(png, ...)`.
+The earlier version only saved files and showed nothing on screen, because every
+plot was wrapped in a `png()` file device.
 
 ### What the script does (mapping to the assignment)
 

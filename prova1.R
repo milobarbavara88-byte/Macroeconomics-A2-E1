@@ -21,8 +21,8 @@ library(vars)       # estimates the VAR model (Question 3)
 # (free, from https://fredaccount.stlouisfed.org/apikeys). This goes through the
 # api.stlouisfed.org endpoint and avoids the "cannot open the connection" /
 # "non e' possibile aprire la connessione" error of getSymbols.
-# >>> PASTE YOUR OWN 32-character FRED API KEY between the quotes below. <<<
-fredr_set_key("PASTE_YOUR_FRED_API_KEY_HERE")
+# >>> Your personal 32-character FRED API key (keep it private). <<<
+fredr_set_key("2dc39adca864462a604d64d7ea499289")
 
 set.seed(123)                                   # reproducibility
 dir.create("output", showWarnings = FALSE)      # folder where all figures are saved
@@ -66,10 +66,16 @@ cat("Ending date            :", format(end(yields)),   "\n")
 cat("Monthly observations   :", nrow(yields), "\n")
 cat("Maturities used (months):", paste(maturities, collapse = ", "), "\n")
 
+# NOTE ON THE PLOTS.
+# Each figure is first drawn ON SCREEN (so it appears in the RStudio "Plots"
+# pane and you can see it), and THEN copied to a .png file in the output/ folder
+# with: dev.copy(png, ...); dev.off(). This is why the previous version showed
+# nothing: the old code opened a png() file device, so every plot went straight
+# to a file and never to the screen.
+
 # ---- Plot 1: the yield curve at three dates (early / middle / recent) --------
 
 idx_dates <- c(1, round(nrow(yields) / 2), nrow(yields))
-png("output/q1_yield_curves.png", width = 800, height = 600)
 plot(maturities, as.numeric(yields[idx_dates[1], ]), type = "b", pch = 19,
      ylim = range(yields[idx_dates, ]), col = "darkblue",
      xlab = "Maturity (months)", ylab = "Yield (%)",
@@ -79,7 +85,7 @@ lines(maturities, as.numeric(yields[idx_dates[3], ]), type = "b", pch = 15, col 
 legend("bottomright", bty = "n", pch = c(19, 17, 15),
        col = c("darkblue", "darkgreen", "darkred"),
        legend = format(index(yields)[idx_dates], "%Y-%m"))
-dev.off()
+dev.copy(png, "output/q1_yield_curves.png", width = 800, height = 600); dev.off()
 
 # ---- Empirical level, slope and curvature ------------------------------------
 # WHAT: build the three model-free yield-curve summaries defined in the assignment.
@@ -95,10 +101,9 @@ empirical <- merge(emp_level, emp_slope, emp_curvature)
 colnames(empirical) <- c("Level", "Slope", "Curvature")
 
 # ---- Plot 2: the three empirical series over time ----------------------------
-png("output/q1_empirical_factors.png", width = 900, height = 700)
 plot.zoo(empirical, main = "Empirical level, slope and curvature",
          xlab = "Date", col = c("darkblue", "darkred", "darkgreen"))
-dev.off()
+dev.copy(png, "output/q1_empirical_factors.png", width = 900, height = 700); dev.off()
 
 # WHAT: quantify persistence with the first-order autocorrelation of each series.
 # HOW TO READ: values close to 1 mean the series is very persistent (slow-moving,
@@ -142,7 +147,6 @@ L <- ns_loadings(maturities, lambda)            # N x 3 loading matrix (N = 8 ma
 # HOW TO READ: the level loading is flat at 1 (moves all yields equally); the
 #       slope loading is large at short maturities and decays to 0 (a short-rate
 #       factor); the curvature loading is hump-shaped, peaking around 2-3 years.
-png("output/q2_ns_loadings.png", width = 800, height = 600)
 matplot(maturities, L, type = "b", pch = 19, lty = 1,
         col = c("darkblue", "darkred", "darkgreen"),
         xlab = "Maturity (months)", ylab = "Loading",
@@ -150,7 +154,7 @@ matplot(maturities, L, type = "b", pch = 19, lty = 1,
 legend("right", bty = "n", lty = 1, pch = 19,
        col = c("darkblue", "darkred", "darkgreen"),
        legend = c("Level (beta1)", "Slope (beta2)", "Curvature (beta3)"))
-dev.off()
+dev.copy(png, "output/q2_ns_loadings.png", width = 800, height = 600); dev.off()
 
 # WHAT: estimate beta1_t, beta2_t, beta3_t MONTH BY MONTH by OLS.
 # WHY : for a fixed lambda the model y_t = Lambda * f_t + e_t is linear in the
@@ -165,10 +169,9 @@ factors <- xts(t(betas), order.by = index(yields))
 colnames(factors) <- c("beta1", "beta2", "beta3")
 
 # ---- Plot 4: the three estimated Nelson-Siegel factors -----------------------
-png("output/q2_ns_factors.png", width = 900, height = 700)
 plot.zoo(factors, main = "Estimated Nelson-Siegel factors",
          xlab = "Date", col = c("darkblue", "darkred", "darkgreen"))
-dev.off()
+dev.copy(png, "output/q2_ns_factors.png", width = 900, height = 700); dev.off()
 
 # ---- Compare estimated factors with empirical level/slope/curvature ----------
 # WHAT: overlay each estimated factor with its empirical counterpart and report
@@ -187,7 +190,6 @@ comparison <- merge(factors$beta1, empirical$Level,
                     factors$beta3, empirical$Curvature)
 colnames(comparison) <- c("beta1", "Level", "minus_beta2", "Slope", "beta3", "Curvature")
 
-png("output/q2_factor_vs_empirical.png", width = 900, height = 800)
 par(mfrow = c(3, 1))
 plot.zoo(comparison[, c("beta1", "Level")], screens = 1, col = c("darkblue", "black"),
          lty = c(1, 2), main = "Level: beta1 vs empirical", xlab = "", ylab = "%")
@@ -201,7 +203,8 @@ plot.zoo(comparison[, c("beta3", "Curvature")], screens = 1, col = c("darkgreen"
          lty = c(1, 2), main = "Curvature: beta3 vs empirical", xlab = "", ylab = "%")
 legend("topright", bty = "n", lty = c(1, 2), col = c("darkgreen", "black"),
        legend = c("beta3", "Curvature"))
-par(mfrow = c(1, 1)); dev.off()
+dev.copy(png, "output/q2_factor_vs_empirical.png", width = 900, height = 800); dev.off()
+par(mfrow = c(1, 1))
 
 cat("\n=========== FACTORS vs EMPIRICAL MEASURES (Question 2) ===========\n")
 cat("corr(beta1 , Level)     :", round(cor(comparison$beta1,  comparison$Level), 3), "\n")
@@ -223,10 +226,9 @@ names(rmse_mat) <- maturities
 cat("\nAverage fitting error (RMSE, basis-point scale of %) by maturity:\n")
 print(round(rmse_mat, 4))
 
-png("output/q2_fitting_errors.png", width = 800, height = 600)
 barplot(rmse_mat, col = "steelblue", xlab = "Maturity (months)", ylab = "RMSE (%)",
         main = "Average Nelson-Siegel fitting error by maturity")
-dev.off()
+dev.copy(png, "output/q2_fitting_errors.png", width = 800, height = 600); dev.off()
 
 
 # ==============================================================================
@@ -401,20 +403,19 @@ colnames(kf_factors) <- c("level", "slope", "curvature")
 
 # HOW TO READ: these filtered factors should track the OLS factors of Q2 but look
 #       SMOOTHER, because the Kalman filter optimally damps measurement noise.
-png("output/q4_kalman_factors.png", width = 900, height = 700)
 plot.zoo(kf_factors, main = "Kalman-filtered Nelson-Siegel factors",
          xlab = "Date", col = c("darkblue", "darkred", "darkgreen"))
-dev.off()
+dev.copy(png, "output/q4_kalman_factors.png", width = 900, height = 700); dev.off()
 
 # Side-by-side comparison of OLS vs Kalman factors (smoothness check for Q5.4).
-png("output/q4_kalman_vs_ols.png", width = 900, height = 800)
 par(mfrow = c(3, 1))
 for (j in 1:3) {
   plot(index(yields), F[, j], type = "l", col = "grey50", xlab = "", ylab = "",
        main = paste0("Factor ", j, ": OLS (grey) vs Kalman (colour)"))
   lines(index(yields), kf_states[, j], col = c("darkblue", "darkred", "darkgreen")[j], lwd = 2)
 }
-par(mfrow = c(1, 1)); dev.off()
+dev.copy(png, "output/q4_kalman_vs_ols.png", width = 900, height = 800); dev.off()
+par(mfrow = c(1, 1))
 
 # TASK 4 - recursive out-of-sample forecasts for h = 1, 6, 12.
 # WHAT: with fixed estimated parameters, at each origin t the filter has produced
@@ -448,13 +449,12 @@ colnames(comp_tbl) <- paste0("h=", horizons)
 cat("\n================ MODEL COMPARISON - pooled RMSE (Question 4/5) ================\n")
 print(round(comp_tbl, 4))
 
-png("output/q4_model_comparison.png", width = 800, height = 600)
 barplot(comp_tbl, beside = TRUE, col = c("grey60", "darkred", "darkblue"),
         ylab = "Pooled RMSE (%)", xlab = "Forecast horizon",
         main = "Forecast accuracy: Random Walk vs VAR vs Kalman")
 legend("topleft", bty = "n", fill = c("grey60", "darkred", "darkblue"),
        legend = c("Random Walk", "VAR", "Kalman"))
-dev.off()
+dev.copy(png, "output/q4_model_comparison.png", width = 800, height = 600); dev.off()
 
 
 # ==============================================================================
