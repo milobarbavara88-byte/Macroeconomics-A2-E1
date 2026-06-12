@@ -12,14 +12,21 @@ and forecasting), following the assignment directives question by question.
 
 ```r
 # from the repository root, in R or RStudio:
-source("R/exercise1_term_structure.R")
+source("prova1.R")
 ```
 
 The script downloads the data directly from **FRED**, prints all requested
 numbers to the console, and writes every figure to the `output/` folder.
-It requires internet access and the packages `quantmod`, `xts`, `zoo`, `vars`
-(installed automatically on first run). The Kalman filter is hand-coded, so no
-state-space package is needed.
+It requires internet access and the packages `quantmod`, `xts`, `zoo`, `vars`.
+Install them once with `install.packages(c("quantmod","xts","zoo","vars"))`;
+the script then loads them with plain `library()` calls. The Kalman filter is
+hand-coded, so no state-space package is needed.
+
+**Note on the FRED download.** The script sets
+`options(download.file.method = "libcurl", timeout = 300)` before downloading.
+This fixes the common *"cannot open the connection" / "non è possibile aprire la
+connessione"* error, which is caused by R defaulting to a download method that
+cannot open the HTTPS connection to FRED.
 
 ### What the script does (mapping to the assignment)
 
