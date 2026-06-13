@@ -15,6 +15,15 @@ and forecasting), following the assignment directives question by question.
 source("prova1.R")
 ```
 
+### Presentation report
+
+`Exercise1_report.Rmd` is a presentation-oriented write-up that runs the full
+analysis and knits to a PDF (all questions explained and answered, every figure
+shown with its interpretation, only minimal code displayed). Knit it from
+RStudio ("Knit") or with `rmarkdown::render("Exercise1_report.Rmd")`. It needs
+the same packages plus `rmarkdown`/`knitr` and a LaTeX engine (e.g.
+`tinytex::install_tinytex()`).
+
 The script downloads the data directly from **FRED**, prints all requested
 numbers to the console, and writes every figure to the `output/` folder.
 It requires internet access and the packages `fredr`, `xts`, `zoo`, `vars`.

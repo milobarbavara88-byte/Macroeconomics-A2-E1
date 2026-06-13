@@ -287,62 +287,77 @@ cat("\n--- RW   RMSE by maturity (rows) and horizon (cols) ---\n");  print(agg_m
 # Model (with DIAGONAL Q and DIAGONAL H):
 #   Measurement: y_t      = Lambda * f_t + eps_t,        eps_t ~ N(0, H), H diagonal
 #   Transition : f_t - mu = A (f_{t-1} - mu) + eta_t,    eta_t ~ N(0, Q), Q diagonal
-# We use a DIAGONAL A (each factor an independent AR(1)) and estimate the model
-# with the dlm package (Petris, "Dynamic Linear Models with R"), the standard R
-# package for linear Gaussian state-space models. dlm runs the Kalman filter and
-# its likelihood for us, so we do NOT code the filter by hand.
-# install.packages("dlm")   # run once if dlm is not installed yet
-library(dlm)
+# For transparency and stability we use a DIAGONAL A (each factor an AR(1)); this
+# keeps the parameter count small and the optimisation robust, while still letting
+# the three factors have different persistence. (A is the only restriction beyond
+# the diagonal Q/H)
 
-# The long-run factor mean mu is fixed at the average of the OLS factors (a
-# standard "concentration" step). Working with the factors in deviation from the
-# mean, g_t = f_t - mu, gives a zero-mean AR(1): g_t = A g_{t-1} + eta. Subtracting
-# Lambda*mu from the yields then leaves a clean state-space with no intercept term,
-# which is exactly the form the dlm package expects.
-mu_hat   <- colMeans(F)                         # fixed factor means (level, slope, curvature)
-mean_yld <- as.numeric(L %*% mu_hat)            # average yield implied at each maturity
-Y_dm     <- sweep(Y, 2, mean_yld, "-")          # demeaned yields (T x N): the data for the filter
-
-# build() returns a dlm object for a given parameter vector:
-#   FF = Lambda (loadings)      GG = diag(A)  (factor persistence)
-#   V  = diag(H) (8 measurement variances)    W = diag(Q) (3 state-shock variances)
-# AR(1) coefficients are kept inside (-1,1) with tanh(); variances are kept
-# positive with exp(). So all 14 parameters are unconstrained for the optimiser.
-build_dns <- function(par) {
-  a <- tanh(par[1:3])                           # 3 AR(1) persistences in (-1,1)
-  q <- exp(par[4:6])                            # 3 state-shock variances (diag Q)
-  h <- exp(par[7:14])                           # 8 measurement variances (diag H)
-  dlm(FF = L, GG = diag(a), W = diag(q),
-      V  = diag(h),
-      m0 = rep(0, 3),                           # demeaned factors start at 0
-      C0 = diag(q / (1 - a^2)))                 # stationary initial variance of an AR(1)
+# WHAT: a hand-coded Kalman filter that returns the log-likelihood AND, on request,
+#       the filtered factors f_{t|t}.
+# Parameter vector 'par' (length 17), all variances stored as LOGS to stay positive:
+#   par[1:3]   = a   : diagonal AR(1) coefficients of A
+#   par[4:6]   = mu  : unconditional means of the three factors
+#   par[7:9]   = log(diag(Q))  (3 state-noise variances)
+#   par[10:17] = log(diag(H))  (8 measurement-noise variances)
+kalman_dns <- function(par, Y, L, return_states = FALSE) {
+  m <- 3; N <- ncol(Y); Tn <- nrow(Y)
+  a  <- par[1:3]
+  mu <- par[4:6]
+  Q  <- diag(exp(par[7:9]),  m)
+  H  <- diag(exp(par[10:17]), N)
+  A  <- diag(a, m)
+  
+  # Diffuse-free stationary initialisation: for a diagonal AR(1) the unconditional
+  # state mean is mu and the unconditional variance solves P = A P A' + Q elementwise.
+  f <- mu
+  P <- diag(exp(par[7:9]) / pmax(1 - a^2, 1e-6), m)
+  
+  ll <- 0
+  states <- matrix(NA_real_, Tn, m)
+  for (t in 1:Tn) {
+    # --- PREDICT: project the state one step ahead ---
+    f_pred <- mu + A %*% (f - mu)
+    P_pred <- A %*% P %*% t(A) + Q
+    # --- INNOVATION: how surprising is today's yield cross-section ---
+    v <- matrix(Y[t, ], N, 1) - L %*% f_pred
+    S <- L %*% P_pred %*% t(L) + H
+    Sinv <- solve(S)
+    # accumulate the Gaussian log-likelihood of the innovation
+    ll <- ll - 0.5 * (N * log(2 * pi) + log(det(S)) + t(v) %*% Sinv %*% v)
+    # --- UPDATE: blend prediction with new information (Kalman gain K) ---
+    K <- P_pred %*% t(L) %*% Sinv
+    f <- f_pred + K %*% v
+    P <- (diag(m) - K %*% L) %*% P_pred
+    states[t, ] <- f
+  }
+  if (return_states) return(states)
+  as.numeric(-ll)                                 # negative log-likelihood for minimisation
 }
 
-# Informed starting values from the Q2/Q3 two-step results (fast, stable MLE).
-ar1  <- function(x) coef(lm(x[-1] ~ x[-length(x)]))[2]   # quick AR(1) coefficient
-a0   <- pmin(pmax(apply(F, 2, ar1), -0.95), 0.95)        # persistence of each factor
-q0   <- apply(F, 2, function(x) var(diff(x)))            # rough state-noise variance
-h0   <- rmse_mat^2                                       # measurement variance = Q2 fitting variance
-par0 <- c(atanh(a0), log(q0), log(h0))                   # 14 starting parameters
+# WHAT: informed starting values taken from the two-step results of Q2/Q3.
+# WHY : good starts make the 17-parameter likelihood optimisation fast and stable.
+ar1 <- function(x) coef(lm(x[-1] ~ x[-length(x)]))[2]   # quick AR(1) coefficient
+a0  <- pmin(pmax(apply(F, 2, ar1), -0.95), 0.99)        # persistence of each factor
+mu0 <- colMeans(F)                                      # mean of each factor
+q0  <- apply(F, 2, function(x) var(diff(x)))            # rough state-noise variance
+h0  <- rmse_mat^2                                       # measurement variance = Q2 fitting variance
+par0 <- c(a0, mu0, log(q0), log(h0))
 
-# TASK 2 - estimate the parameters by maximum likelihood on the SAME training
-# window used for the VAR (so the comparison is fair and look-ahead free).
-# dlmMLE maximises the Kalman-filter likelihood internally.
-fit_kf  <- dlmMLE(Y_dm[1:n_train, ], parm = par0, build = build_dns,
-                  method = "BFGS", control = list(maxit = 500))
-mod_hat <- build_dns(fit_kf$par)                # the fitted state-space model
-a_hat   <- tanh(fit_kf$par[1:3])                # estimated factor persistences (diag A)
-
+# TASK 2 - estimate the model by maximum likelihood on the SAME training window
+# used for the VAR (so the out-of-sample comparison is fair and look-ahead free).
+lower <- c(rep(-0.999, 3), rep(-Inf, 3), rep(-20, 3), rep(-20, 8))
+upper <- c(rep( 0.999, 3), rep( Inf, 3), rep( 10, 3), rep( 10, 8))
+fit_kf <- optim(par0, kalman_dns, Y = Y[1:n_train, , drop = FALSE], L = L,
+                method = "L-BFGS-B", lower = lower, upper = upper,
+                control = list(maxit = 500))
+par_hat <- fit_kf$par
 cat("\n================ Kalman filter estimates (Question 4) ================\n")
-cat("Factor persistences (diag A):", round(a_hat, 3), "\n")
-cat("Factor means (mu)           :", round(mu_hat, 3), "\n")
+cat("Factor persistences (diag A):", round(par_hat[1:3], 3), "\n")
+cat("Factor means (mu)           :", round(par_hat[4:6], 3), "\n")
 
-# TASK 3 - filtered factors over the FULL sample. dlmFilter() runs the Kalman
-# filter with the fixed estimated parameters and returns the filtered states in
-# $m (its first row is the time-0 prior, so we drop it). We add mu back to put the
-# factors on their original level/slope/curvature scale.
-filt      <- dlmFilter(Y_dm, mod_hat)
-kf_states <- sweep(filt$m[-1, , drop = FALSE], 2, mu_hat, "+")   # T x 3 filtered factors
+# TASK 3 - filtered factors over the FULL sample (states updated recursively with
+# fixed estimated parameters) and their plot.
+kf_states <- kalman_dns(par_hat, Y, L, return_states = TRUE)
 kf_factors <- xts(kf_states, order.by = index(yields))
 colnames(kf_factors) <- c("level", "slope", "curvature")
 
@@ -366,7 +381,7 @@ par(mfrow = c(1, 1))
 # WHAT: with fixed estimated parameters, at each origin t the filter has produced
 #       f_{t|t} using data up to t only; the h-step forecast of a diagonal-A AR(1)
 #       state is f_{t+h|t} = mu + A^h (f_{t|t} - mu), mapped to yields by Lambda.
-#       a_hat and mu_hat were estimated above with dlm.
+a_hat  <- par_hat[1:3]; mu_hat <- par_hat[4:6]
 err_kf <- err_var                                 # same dimensions/origins as the VAR errors
 for (i in seq_along(origins)) {
   t0   <- origins[i]

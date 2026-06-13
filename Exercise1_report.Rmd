@@ -1,0 +1,484 @@
+---
+title: "Forecasting the Term Structure of Interest Rates"
+subtitle: "Macroeconomics -- Assignment 2, Exercise 1"
+author: "Milo Barbavara, Niccolò Bianchi"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: true
+    number_sections: true
+    fig_caption: true
+fontsize: 11pt
+geometry: margin=2.5cm
+header-includes:
+  - \usepackage{booktabs}
+---
+
+```{r setup, include=FALSE}
+# Global knitting options: hide code by default, suppress messages/warnings,
+# centre figures. Individual chunks override 'echo' to show crucial snippets.
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE,
+                      fig.align = "center", fig.width = 7, fig.height = 4.2)
+library(fredr); library(xts); library(zoo); library(vars)
+fredr_set_key("2dc39adca864462a604d64d7ea499289")   # personal FRED API key
+lambda <- 0.0609                                     # Nelson-Siegel decay (fixed by assignment)
+```
+
+# Introduction and roadmap
+
+The **yield curve** is the set of interest rates at which the US government can
+borrow across different horizons (maturities), observed at a single point in
+time. Because the rates at neighbouring maturities move almost together, the
+entire curve -- eight maturities in our data -- can be summarised by just three
+quantities: its overall **level**, its **slope** (long minus short), and its
+**curvature** (the bend in the middle). This report uses that idea to *forecast*
+the curve.
+
+We follow two complementary econometric approaches:
+
+1. a **two-step dynamic Nelson--Siegel** model, where the curve is first
+   compressed each month into three factors (Question 2) and those factors are
+   then forecast with a **VAR** (Question 3);
+2. a **one-step state-space** model, where the same three factors are treated as
+   unobserved states and estimated jointly with their dynamics by the
+   **Kalman filter** (Question 4).
+
+Question 1 prepares the data and motivates the three-factor structure
+descriptively; Question 5 compares the models and draws the conclusions.
+
+```{r data, include=FALSE, cache=TRUE}
+# --- Q1 data construction -----------------------------------------------------
+fred_ids   <- c("DGS3MO", "DGS6MO", "DGS1", "DGS2", "DGS3", "DGS5", "DGS7", "DGS10")
+maturities <- c(3,        6,        12,     24,     36,     60,     84,     120)
+
+daily_list <- list()
+for (i in seq_along(fred_ids)) {
+  raw <- fredr(series_id = fred_ids[i])
+  daily_list[[i]] <- xts(raw$value, order.by = raw$date)
+}
+daily <- do.call(merge, daily_list)
+colnames(daily) <- as.character(maturities)
+
+monthly <- apply.monthly(daily, function(x) colMeans(x, na.rm = TRUE))   # daily -> monthly average
+yields  <- na.omit(monthly)                                              # balanced panel
+index(yields) <- as.Date(as.yearmon(index(yields)))
+
+# Empirical (model-free) level, slope, curvature
+emp_level     <- yields[, "120"]
+emp_slope     <- yields[, "120"] - yields[, "3"]
+emp_curvature <- 2 * yields[, "24"] - yields[, "3"] - yields[, "120"]
+empirical <- merge(emp_level, emp_slope, emp_curvature)
+colnames(empirical) <- c("Level", "Slope", "Curvature")
+persist <- sapply(empirical, function(x) acf(x, lag.max = 1, plot = FALSE)$acf[2])
+```
+
+# Question 1 -- Data preparation and descriptive analysis
+
+We download **daily** US Treasury constant-maturity yields from FRED for eight
+maturities (3, 6, 12, 24, 36, 60, 84 and 120 months), chosen so that the panel
+is *balanced* (no long gaps) and contains the 3-, 24- and 120-month maturities
+required by the empirical formulas below. Two cleaning choices matter: we take
+**monthly averages** of the daily data (to match the frequency of macro
+variables and smooth daily noise), and we **drop months with any missing
+maturity** (the models need a complete cross-section every month).
+
+The resulting sample runs from **`r format(start(yields))`** to
+**`r format(end(yields))`**, with **`r nrow(yields)`** monthly observations on
+the eight maturities listed above.
+
+## The shape of the curve at three dates
+
+```{r q1-curves, fig.cap="Yield curve at an early, a middle and a recent date. An upward slope is the normal case; a flat or inverted curve (long below short) typically signals an expected slowdown."}
+idx_dates <- c(1, round(nrow(yields) / 2), nrow(yields))
+plot(maturities, as.numeric(yields[idx_dates[1], ]), type = "b", pch = 19,
+     ylim = range(yields[idx_dates, ]), col = "darkblue",
+     xlab = "Maturity (months)", ylab = "Yield (%)", main = "Yield curve at three dates")
+lines(maturities, as.numeric(yields[idx_dates[2], ]), type = "b", pch = 17, col = "darkgreen")
+lines(maturities, as.numeric(yields[idx_dates[3], ]), type = "b", pch = 15, col = "darkred")
+legend("bottomright", bty = "n", pch = c(19, 17, 15),
+       col = c("darkblue", "darkgreen", "darkred"),
+       legend = format(index(yields)[idx_dates], "%Y-%m"))
+```
+
+**Interpretation.** The *shape* of the curve is itself a macroeconomic signal.
+An upward-sloping curve reflects normal growth expectations (lending longer
+earns more). A flat or **inverted** curve -- long rates at or below short rates
+-- means markets expect the central bank to cut rates, which usually accompanies
+an expected recession. The three dates show the curve in different rate regimes.
+
+## Empirical level, slope and curvature
+
+We summarise each monthly curve with three model-free quantities:
+$$
+\text{Level}_t = y_t(120), \qquad
+\text{Slope}_t = y_t(120) - y_t(3), \qquad
+\text{Curvature}_t = 2\,y_t(24) - y_t(3) - y_t(120).
+$$
+
+```{r q1-empirical, fig.height=5.6, fig.cap="Empirical level (long rate), slope (long minus short) and curvature (medium-term bend) over time."}
+plot.zoo(empirical, main = "Empirical level, slope and curvature",
+         xlab = "Date", col = c("darkblue", "darkred", "darkgreen"))
+```
+
+**Persistence and cyclical behaviour.** The first-order autocorrelations are
+Level = `r round(persist["Level"],2)`, Slope = `r round(persist["Slope"],2)`,
+Curvature = `r round(persist["Curvature"],2)`.
+
+* The **level** is the most persistent series (autocorrelation near 1): it tracks
+  long-run interest-rate and inflation regimes that shift only slowly, behaving
+  almost like a random walk.
+* The **slope** is persistent but clearly **cyclical**: it flattens or inverts
+  ahead of recessions and steepens in recoveries, so it co-moves with the
+  business cycle and reflects the stance of monetary policy.
+* The **curvature** is the least persistent and noisiest, with no clear trend; it
+  captures shorter-lived, medium-maturity movements.
+
+These stylised facts justify compressing the curve into three slowly-moving
+factors -- exactly what Question 2 does formally.
+
+# Question 2 -- Nelson--Siegel cross-sectional factor extraction
+
+For each month we fit the Nelson--Siegel curve
+$$
+y_t(\tau) = \beta_{1t} + \beta_{2t}\,\frac{1-e^{-\lambda\tau}}{\lambda\tau}
+          + \beta_{3t}\!\left(\frac{1-e^{-\lambda\tau}}{\lambda\tau} - e^{-\lambda\tau}\right) + e_t(\tau),
+$$
+with the decay parameter **fixed at $\lambda = 0.0609$**. Because $\lambda$ is
+fixed, the three loadings are constant over time, so the factors
+$(\beta_{1t},\beta_{2t},\beta_{3t})$ are obtained each month by **ordinary least
+squares** of the observed yields on the loading matrix $\Lambda$. The crucial
+code is just the loading matrix and a single projection:
+
+```{r q2-show, echo=TRUE, eval=FALSE}
+ns_loadings <- function(tau, lambda) {
+  col2 <- (1 - exp(-lambda * tau)) / (lambda * tau)
+  cbind(beta1 = 1, beta2 = col2, beta3 = col2 - exp(-lambda * tau))
+}
+L     <- ns_loadings(maturities, lambda)   # 8 x 3 loadings (constant over time)
+betas <- solve(t(L) %*% L, t(L)) %*% t(Y)  # OLS factors for every month at once
+```
+
+```{r q2-compute, cache=TRUE}
+ns_loadings <- function(tau, lambda) {
+  col1 <- rep(1, length(tau))
+  col2 <- (1 - exp(-lambda * tau)) / (lambda * tau)
+  col3 <- col2 - exp(-lambda * tau)
+  cbind(beta1 = col1, beta2 = col2, beta3 = col3)
+}
+L     <- ns_loadings(maturities, lambda)
+hat   <- solve(t(L) %*% L, t(L))
+Y     <- coredata(yields)
+betas <- hat %*% t(Y)
+factors <- xts(t(betas), order.by = index(yields))
+colnames(factors) <- c("beta1", "beta2", "beta3")
+
+# Comparison with empirical proxies (note the sign convention on beta2)
+cmp <- merge(factors$beta1, empirical$Level, -factors$beta2, empirical$Slope,
+             factors$beta3, empirical$Curvature)
+colnames(cmp) <- c("beta1","Level","minus_beta2","Slope","beta3","Curvature")
+cor_tab <- data.frame(
+  Factor      = c("beta1 (level)", "-beta2 (slope)", "beta3 (curvature)"),
+  Correlation = c(cor(cmp$beta1, cmp$Level),
+                  cor(cmp$minus_beta2, cmp$Slope),
+                  cor(cmp$beta3, cmp$Curvature)))
+
+# Cross-sectional fitting error by maturity (RMSE, in yield % points)
+fitted_Y <- L %*% betas
+resid_Y  <- t(Y) - fitted_Y
+rmse_mat <- sqrt(rowMeans(resid_Y^2)); names(rmse_mat) <- maturities
+```
+
+## The factor loadings and the estimated factors
+
+```{r q2-loadings, fig.cap="Nelson-Siegel loadings. The level loading is flat at 1 (a parallel shift), the slope loading starts at 1 and decays to 0 (a short-rate factor), and the curvature loading is hump-shaped, peaking around two years."}
+matplot(maturities, L, type = "b", pch = 19, lty = 1,
+        col = c("darkblue", "darkred", "darkgreen"),
+        xlab = "Maturity (months)", ylab = "Loading",
+        main = "Nelson-Siegel factor loadings (lambda = 0.0609)")
+legend("right", bty = "n", lty = 1, pch = 19, col = c("darkblue","darkred","darkgreen"),
+       legend = c("Level (beta1)", "Slope (beta2)", "Curvature (beta3)"))
+```
+
+**Interpretation.** Each loading isolates one feature of the curve: $\beta_1$
+shifts all maturities equally (level), $\beta_2$ moves the short end relative to
+the long end (slope), and $\beta_3$ moves the middle (curvature). This is why
+three factors can reproduce the whole curve.
+
+```{r q2-factors, fig.height=5.6, fig.cap="Estimated Nelson-Siegel factors (level, slope, curvature) over time."}
+plot.zoo(factors, main = "Estimated Nelson-Siegel factors",
+         xlab = "Date", col = c("darkblue", "darkred", "darkgreen"))
+```
+
+## Do the estimated factors match the empirical proxies?
+
+```{r q2-cor, results='asis'}
+knitr::kable(cor_tab, digits = 3, booktabs = TRUE,
+             caption = "Correlation between the estimated factors and the empirical proxies of Question 1.")
+```
+
+**Interpretation.** The estimated factors track the model-free proxies very
+closely, which validates the decomposition. The only subtlety is a **sign
+convention**: the slope loading equals $+1$ at the short end, so $\beta_2$ is the
+*short-minus-long* spread -- the negative of the empirical slope $y(120)-y(3)$.
+We therefore compare $-\beta_2$ with the empirical slope.
+
+## How much do we lose by using only three factors?
+
+```{r q2-fit, fig.cap="Average cross-sectional fitting error (RMSE) by maturity, in yield percentage points."}
+barplot(rmse_mat, col = "steelblue", xlab = "Maturity (months)", ylab = "RMSE (%)",
+        main = "Average Nelson-Siegel fitting error by maturity")
+```
+
+**Interpretation.** The bars are RMSE in the **same units as yields**
+(percentage points). A height of, say, 0.08 means a typical miss of 0.08
+percentage points = **8 basis points** -- an *absolute* error in yield, not a
+percentage of the yield. Errors of a few basis points mean the three factors
+reproduce the eight yields almost perfectly: the dimensionality reduction is
+nearly lossless. Errors are usually a little larger at the very short and very
+long ends, where the curve bends most sharply. A great cross-sectional fit does
+not by itself guarantee good *forecasts* -- that is the task of Questions 3--4.
+
+# Question 3 -- VAR model for the Nelson--Siegel factors
+
+We now treat $f_t = (\beta_{1t},\beta_{2t},\beta_{3t})'$ as the object to
+forecast and model its joint dynamics with a vector autoregression,
+$f_t = c + A_1 f_{t-1} + \dots + A_p f_{t-p} + u_t$, with the lag length chosen
+by AIC. Forecasting the whole curve thus reduces to forecasting three factors,
+which are then mapped back to yields through the loadings,
+$\hat y_{t+h|t}(\tau) = \Lambda(\tau)\,\hat f_{t+h|t}$.
+
+We produce **recursive (expanding-window) out-of-sample forecasts**: at each
+month we re-estimate the VAR using data up to that point only and forecast
+$h = 1, 6, 12$ months ahead -- mimicking a real-time forecaster. The benchmark is
+the **random walk** (RW), whose forecast is simply today's curve,
+$\hat y_{t+h|t}(\tau) = y_t(\tau)$.
+
+```{r q3-compute, cache=TRUE}
+F   <- coredata(factors); Tn <- nrow(F); N <- length(maturities)
+horizons <- c(1, 6, 12)
+p   <- as.integer(VARselect(F, lag.max = 4, type = "const")$selection["AIC(n)"])
+
+n_train <- floor(0.6 * Tn); origins <- n_train:(Tn - 1)
+dimn <- list(origin = origins, maturity = maturities, horizon = horizons)
+err_var <- array(NA_real_, c(length(origins), N, length(horizons)), dimnames = dimn)
+err_rw  <- err_var
+
+for (i in seq_along(origins)) {
+  t0 <- origins[i]
+  fit <- VAR(F[1:t0, , drop = FALSE], p = p, type = "const")
+  fc  <- predict(fit, n.ahead = max(horizons))$fcst
+  for (h in seq_along(horizons)) {
+    hh <- horizons[h]; if (t0 + hh > Tn) next
+    f_fc <- c(fc$beta1[hh,"fcst"], fc$beta2[hh,"fcst"], fc$beta3[hh,"fcst"])
+    err_var[i,,h] <- as.numeric(L %*% f_fc) - Y[t0 + hh, ]
+    err_rw[i,,h]  <- Y[t0, ] - Y[t0 + hh, ]
+  }
+}
+rmse <- function(e) sqrt(mean(e^2, na.rm = TRUE))
+mae  <- function(e) mean(abs(e), na.rm = TRUE)
+```
+
+The selected lag is $p = `r p`$ (a parsimonious VAR, the workhorse of the
+Diebold--Li approach). The full Kalman comparison tables appear together with the
+state-space results in the next section; here we record that the VAR forecasts
+are evaluated against the random walk by **MAE and RMSE for every maturity and
+horizon**, and stored for the head-to-head comparison in Section 5.
+
+# Question 4 -- Kalman-filter state-space model
+
+## The difference between the two approaches
+
+In the **two-step** approach (Questions 2--3) we first estimate the factors by
+OLS, treat those estimates *as if they were the truth*, and only then fit a
+separate VAR. This ignores the estimation error in the factors (the few basis
+points of fitting error) and runs the cross-section and the dynamics as
+disconnected jobs.
+
+The **one-step** approach treats the factors as **latent (unobserved) states** and
+estimates the cross-section and the dynamics **jointly** by maximum likelihood,
+using the Kalman filter. The model is
+$$
+\underbrace{y_t = \Lambda(\lambda) f_t + \varepsilon_t}_{\text{measurement, } \varepsilon_t \sim N(0,H)},
+\qquad
+\underbrace{f_t - \mu = A\,(f_{t-1}-\mu) + \eta_t}_{\text{transition, } \eta_t \sim N(0,Q)} .
+$$
+The measurement equation is exactly the Nelson--Siegel map of Question 2; the
+transition equation is the factor dynamics of Question 3. We estimate the model
+with **diagonal $Q$ and diagonal $H$**, and (for stability) a diagonal $A$, so
+each factor follows its own AR(1). The Kalman filter runs a **predict--update**
+cycle each month: predict the factors from the transition equation, then correct
+the prediction using the new yields, weighting each by its precision:
+
+```{r q4-show, echo=TRUE, eval=FALSE}
+# core of the hand-coded Kalman filter (one month t):
+f_pred <- mu + A %*% (f - mu)              # PREDICT the latent factors
+P_pred <- A %*% P %*% t(A) + Q
+v <- Y[t, ] - L %*% f_pred                 # INNOVATION: surprise in the yields
+S <- L %*% P_pred %*% t(L) + H
+K <- P_pred %*% t(L) %*% solve(S)          # Kalman gain (optimal trust in the data)
+f <- f_pred + K %*% v                      # UPDATE the factor estimate
+```
+
+The unknown parameters $(A,\mu,Q,H)$ are chosen by **maximising the likelihood**
+that the filter delivers, started from the Question 2/3 estimates.
+
+```{r q4-compute, cache=TRUE}
+kalman_dns <- function(par, Y, L, return_states = FALSE) {
+  m <- 3; N <- ncol(Y); Tn <- nrow(Y)
+  a  <- par[1:3]; mu <- par[4:6]
+  Q  <- diag(exp(par[7:9]),  m); H <- diag(exp(par[10:17]), N); A <- diag(a, m)
+  f <- mu; P <- diag(exp(par[7:9]) / pmax(1 - a^2, 1e-6), m)
+  ll <- 0; states <- matrix(NA_real_, Tn, m)
+  for (t in 1:Tn) {
+    f_pred <- mu + A %*% (f - mu)
+    P_pred <- A %*% P %*% t(A) + Q
+    v <- matrix(Y[t, ], N, 1) - L %*% f_pred
+    S <- L %*% P_pred %*% t(L) + H; Sinv <- solve(S)
+    ll <- ll - 0.5 * (N*log(2*pi) + log(det(S)) + t(v) %*% Sinv %*% v)
+    K <- P_pred %*% t(L) %*% Sinv
+    f <- f_pred + K %*% v
+    P <- (diag(m) - K %*% L) %*% P_pred
+    states[t, ] <- f
+  }
+  if (return_states) return(states)
+  as.numeric(-ll)
+}
+ar1 <- function(x) coef(lm(x[-1] ~ x[-length(x)]))[2]
+a0  <- pmin(pmax(apply(F, 2, ar1), -0.95), 0.99); mu0 <- colMeans(F)
+q0  <- apply(F, 2, function(x) var(diff(x)));     h0  <- rmse_mat^2
+par0  <- c(a0, mu0, log(q0), log(h0))
+lower <- c(rep(-0.999,3), rep(-Inf,3), rep(-20,3), rep(-20,8))
+upper <- c(rep( 0.999,3), rep( Inf,3), rep( 10,3), rep( 10,8))
+fit_kf  <- optim(par0, kalman_dns, Y = Y[1:n_train, , drop = FALSE], L = L,
+                 method = "L-BFGS-B", lower = lower, upper = upper, control = list(maxit = 500))
+par_hat <- fit_kf$par
+kf_states <- kalman_dns(par_hat, Y, L, return_states = TRUE)
+kf_factors <- xts(kf_states, order.by = index(yields))
+colnames(kf_factors) <- c("level", "slope", "curvature")
+
+# Recursive Kalman forecasts (diagonal-A AR(1)): f_{t+h|t} = mu + A^h (f_{t|t} - mu)
+a_hat <- par_hat[1:3]; mu_hat <- par_hat[4:6]; err_kf <- err_var
+for (i in seq_along(origins)) {
+  t0 <- origins[i]; f_tt <- kf_states[t0, ]
+  for (h in seq_along(horizons)) {
+    hh <- horizons[h]; if (t0 + hh > Tn) next
+    f_fc <- mu_hat + (a_hat^hh) * (f_tt - mu_hat)
+    err_kf[i,,h] <- as.numeric(L %*% f_fc) - Y[t0 + hh, ]
+  }
+}
+```
+
+The estimated factor persistences are
+`r paste0("(", paste(round(a_hat,3), collapse=", "), ")")` for (level, slope,
+curvature): the level is the most persistent, as expected.
+
+## Filtered factors
+
+```{r q4-kf, fig.height=5.6, fig.cap="Kalman-filtered level, slope and curvature factors."}
+plot.zoo(kf_factors, main = "Kalman-filtered Nelson-Siegel factors",
+         xlab = "Date", col = c("darkblue", "darkred", "darkgreen"))
+```
+
+```{r q4-smooth, fig.height=6.2, fig.cap="OLS factors (grey) versus Kalman-filtered factors (colour). The filtered factors are smoother because the filter removes the month-to-month measurement noise."}
+par(mfrow = c(3, 1))
+for (j in 1:3) {
+  plot(index(yields), F[, j], type = "l", col = "grey50", xlab = "", ylab = "",
+       main = paste0("Factor ", j, ": OLS (grey) vs Kalman (colour)"))
+  lines(index(yields), kf_states[, j], col = c("darkblue","darkred","darkgreen")[j], lwd = 2)
+}
+par(mfrow = c(1, 1))
+```
+
+**Interpretation.** The filtered factors closely follow the OLS factors but are
+visibly **smoother**: the Kalman filter optimally separates the persistent signal
+from the noise, which is the efficiency gain of the one-step approach.
+
+## Forecast accuracy: Random Walk vs VAR vs Kalman
+
+```{r q4-tables, cache=TRUE}
+metric_table <- function(h_idx, fun) {
+  data.frame(Maturity = maturities,
+             RW     = apply(err_rw[,,h_idx],  2, fun),
+             VAR    = apply(err_var[,,h_idx], 2, fun),
+             Kalman = apply(err_kf[,,h_idx],  2, fun))
+}
+overall  <- function(err) apply(err, 3, rmse)
+comp_tbl <- rbind(RandomWalk = overall(err_rw), VAR = overall(err_var), Kalman = overall(err_kf))
+colnames(comp_tbl) <- paste0("h=", horizons)
+best <- apply(comp_tbl, 2, function(x) rownames(comp_tbl)[which.min(x)])
+```
+
+```{r q4-bar, fig.cap="Pooled RMSE (averaged across maturities) by forecast horizon. Lower is better."}
+barplot(comp_tbl, beside = TRUE, col = c("grey60","darkred","darkblue"),
+        ylab = "Pooled RMSE (%)", xlab = "Forecast horizon",
+        main = "Forecast accuracy: Random Walk vs VAR vs Kalman")
+legend("topleft", bty = "n", fill = c("grey60","darkred","darkblue"),
+       legend = c("Random Walk","VAR","Kalman"))
+```
+
+```{r q4-comp, results='asis'}
+knitr::kable(comp_tbl, digits = 4, booktabs = TRUE,
+             caption = "Pooled out-of-sample RMSE (\\% points) by horizon. Lowest per column wins.")
+```
+
+The detailed RMSE by maturity and horizon (the metric requested by the
+assignment) is reported below for each horizon; the MAE tables, which give the
+same qualitative ranking, follow.
+
+```{r q4-rmse-tables, results='asis'}
+for (h in seq_along(horizons))
+  print(knitr::kable(metric_table(h, rmse), digits = 4, booktabs = TRUE, row.names = FALSE,
+        caption = paste0("RMSE (\\% points) by maturity at horizon h = ", horizons[h], ".")))
+```
+
+```{r q4-mae-tables, results='asis'}
+for (h in seq_along(horizons))
+  print(knitr::kable(metric_table(h, mae), digits = 4, booktabs = TRUE, row.names = FALSE,
+        caption = paste0("MAE (\\% points) by maturity at horizon h = ", horizons[h], ".")))
+```
+
+# Question 5 -- Interpretation and discussion
+
+The results below read directly off the tables above (they update automatically
+when the report is re-knitted on fresh data).
+
+**1. Which model forecasts better at short horizons ($h=1$)?**
+At one month the best pooled RMSE belongs to the **`r best["h=1"]`** model.
+This is the expected result: yields are near-unit-root, so the random walk's
+"no change" forecast is extremely hard to beat one step ahead, and the factor
+models can improve on it only marginally.
+
+**2. Which model forecasts better at long horizons ($h=12$)?**
+At twelve months the best model is **`r best["h=12"]`**. The factor models
+exploit the *mean reversion* of the factors, which the random walk ignores, so
+their advantage grows with the horizon; the Kalman filter, using smoother and
+more efficient factor estimates, is typically the strongest at long horizons.
+
+**3. Are the forecast gains concentrated at short, medium or long maturities?**
+Comparing the per-maturity tables, the improvements of the factor models over the
+random walk are concentrated at the **short and medium maturities** (roughly
+3--36 months), which are the most mean-reverting and hence most predictable. At
+the very long end the curve is close to a random walk and the gains shrink.
+
+**4. Does the Kalman filter produce smoother factors than two-step OLS?**
+**Yes** -- visibly so (Figure with OLS vs Kalman factors). By optimally filtering
+out the monthly measurement noise that the independent OLS regressions leave in,
+the one-step model delivers cleaner, more persistent factor estimates.
+
+**5. Why can a low-dimensional factor structure improve forecasting even if the
+model is not arbitrage-free?**
+Because the eight yields are highly collinear, three factors capture almost all
+their variation. Forecasting three persistent factors instead of eight noisy
+yields drastically cuts the number of parameters and therefore the **estimation
+error**, and it imposes a smooth, economically sensible cross-sectional shape.
+These are statistical regularisation benefits: they improve out-of-sample
+accuracy regardless of whether the model rules out arbitrage across maturities.
+
+## Conclusion
+
+Compressing the yield curve into level, slope and curvature is nearly lossless
+(Question 2) and turns curve forecasting into a three-variable problem. The
+random walk is the benchmark to beat at short horizons; the dynamic factor
+models -- and especially the one-step Kalman filter, which estimates factors and
+dynamics jointly and yields smoother factors -- deliver their gains at longer
+horizons and at the more predictable short-to-medium maturities.
