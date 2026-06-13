@@ -127,10 +127,7 @@ print(round(persist, 3))
 # QUESTION 2 - NELSON-SIEGEL CROSS-SECTIONAL FACTOR EXTRACTION
 # ==============================================================================
 
-# WHAT: build the Nelson-Siegel loading matrix Lambda(lambda).
-# WHY : it maps the three factors (beta1, beta2, beta3) into the yield of every
-#       maturity. Because lambda is FIXED, the loadings are constant over time,
-#       which turns factor estimation into a simple linear regression each month.
+# Build the Nelson-Siegel loading matrix Lambda
 # Loadings:
 #   column 1 = 1                                  -> LEVEL loading (same for all tau)
 #   column 2 = (1-exp(-l*t))/(l*t)                -> SLOPE loading (1 at short end -> 0 at long end)
@@ -144,7 +141,7 @@ ns_loadings <- function(tau, lambda) {
 L <- ns_loadings(maturities, lambda)            # N x 3 loading matrix (N = 8 maturities)
 
 # ---- Plot 3: the three factor loadings ---------------------------------------
-# HOW TO READ: the level loading is flat at 1 (moves all yields equally); the
+#       The level loading is flat at 1 (moves all yields equally); the
 #       slope loading is large at short maturities and decays to 0 (a short-rate
 #       factor); the curvature loading is hump-shaped, peaking around 2-3 years.
 matplot(maturities, L, type = "b", pch = 19, lty = 1,
@@ -156,12 +153,8 @@ legend("right", bty = "n", lty = 1, pch = 19,
        legend = c("Level (beta1)", "Slope (beta2)", "Curvature (beta3)"))
 dev.copy(png, "output/q2_ns_loadings.png", width = 800, height = 600); dev.off()
 
-# WHAT: estimate beta1_t, beta2_t, beta3_t MONTH BY MONTH by OLS.
-# WHY : for a fixed lambda the model y_t = Lambda * f_t + e_t is linear in the
-#       factors, so each month's factors are an ordinary least-squares fit of the
-#       observed cross-section onto the loading matrix.
-# HOW : the OLS "hat" matrix (L'L)^(-1)L' is constant, so we compute it once and
-#       apply it to every month at once -> efficient and exact.
+# Estimate coefficients by OLS.
+
 hat   <- solve(t(L) %*% L, t(L))                # 3 x N  (the OLS projector)
 Y     <- coredata(yields)                       # T x N matrix of yields
 betas <- hat %*% t(Y)                           # 3 x T matrix of estimated factors
@@ -174,17 +167,7 @@ plot.zoo(factors, main = "Estimated Nelson-Siegel factors",
 dev.copy(png, "output/q2_ns_factors.png", width = 900, height = 700); dev.off()
 
 # ---- Compare estimated factors with empirical level/slope/curvature ----------
-# WHAT: overlay each estimated factor with its empirical counterpart and report
-#       their correlation.
-# WHY : it validates the Nelson-Siegel decomposition: a good model should give
-#       factors that move closely with the model-free proxies.
-# HOW TO READ (sign conventions):
-#   beta1 ~  Level      (positive, near 1 correlation): beta1 IS the long-run level.
-#   beta2 ~ -Slope      : by construction the slope loading is +1 at the short end,
-#                         so beta2 is the SHORT-minus-LONG spread, i.e. the NEGATIVE
-#                         of the empirical slope y(120)-y(3). We therefore compare
-#                         beta2 with -Slope.
-#   beta3 ~  Curvature  (same sign, different scale).
+
 comparison <- merge(factors$beta1, empirical$Level,
                     -factors$beta2, empirical$Slope,
                     factors$beta3, empirical$Curvature)
@@ -212,13 +195,7 @@ cat("corr(-beta2, Slope)     :", round(cor(comparison$minus_beta2, comparison$Sl
 cat("corr(beta3 , Curvature) :", round(cor(comparison$beta3,  comparison$Curvature), 3), "\n")
 
 # ---- Average fitting errors by maturity --------------------------------------
-# WHAT: for each maturity, measure how well the 3-factor curve reproduces yields.
-# WHY : the Nelson-Siegel model is parsimonious (3 factors for 8 yields), so we
-#       must check it does not systematically miss some part of the curve.
-# HOW : residuals = observed - fitted; we report the RMSE per maturity.
-# HOW TO READ: small RMSE everywhere means 3 factors are enough; errors are
-#       usually a little larger at the very short and very long ends, where the
-#       curve is hardest to fit.
+
 fitted_Y  <- L %*% betas                        # N x T fitted yields
 resid_Y   <- t(Y) - fitted_Y                    # N x T residuals
 rmse_mat  <- sqrt(rowMeans(resid_Y^2))          # one RMSE per maturity
@@ -235,28 +212,19 @@ dev.copy(png, "output/q2_fitting_errors.png", width = 800, height = 600); dev.of
 # QUESTION 3 - VAR MODEL FOR THE NELSON-SIEGEL FACTORS
 # ==============================================================================
 
-# WHAT: model the joint dynamics of f_t = (beta1, beta2, beta3) with a VAR.
-# WHY : forecasting the whole yield curve reduces to forecasting only THREE
-#       factors; the VAR captures their persistence and cross-dependence
-#       (e.g. today's slope helps predict tomorrow's level).
+# Model the joint dynamics of f_t = (beta1, beta2, beta3) with a VAR.
+
 F     <- coredata(factors)                      # T x 3 factor matrix
 Tn    <- nrow(F)
-horizons <- c(1, 6, 12)                         # forecast horizons required by the assignment
+horizons <- c(1, 6, 12)                         # forecast horizons
 
-# WHAT: choose the VAR lag length by AIC (capped at 4 for parsimony).
-# HOW TO READ: a low selected lag (often 1) confirms the factors are close to a
-#       simple persistent VAR(1), the workhorse of the Diebold-Li model.
 sel <- VARselect(F, lag.max = 4, type = "const")
 p   <- as.integer(sel$selection["AIC(n)"])
 cat("\n================ VAR specification (Question 3) ================\n")
 cat("Selected VAR lag (AIC):", p, "\n")
 
 # ---- Recursive (expanding-window) out-of-sample forecasts --------------------
-# WHAT: starting from an initial training window, re-estimate the VAR every month
-#       and forecast the factors h steps ahead; then map factor forecasts into
-#       YIELD forecasts through the Nelson-Siegel loadings.
-# WHY : recursive OOS forecasting mimics a real-time forecaster and is the fair
-#       way to judge predictive accuracy (no look-ahead).
+
 # Convert factor forecast f_{t+h|t} into yields: y_hat = Lambda * f_{t+h|t}.
 n_train <- floor(0.6 * Tn)                       # first 60% of the sample trains the first forecast
 origins <- n_train:(Tn - 1)                      # forecast origins (expanding window)
@@ -299,105 +267,82 @@ cat("\n--- VAR  RMSE by maturity (rows) and horizon (cols) ---\n");  print(agg_m
 cat("\n--- RW   MAE  by maturity (rows) and horizon (cols) ---\n");  print(agg_metric(err_rw,  mae))
 cat("\n--- RW   RMSE by maturity (rows) and horizon (cols) ---\n");  print(agg_metric(err_rw,  rmse))
 
-# INTERPRETATION (Question 3):
-#   Compare the VAR tables with the random-walk tables cell by cell. A VAR entry
-#   SMALLER than the corresponding RW entry means the factor model beats the naive
-#   "no change" forecast for that maturity/horizon. In yield-curve data the random
-#   walk is famously hard to beat at h = 1, while the VAR tends to gain at longer
-#   horizons (h = 6, 12) because the factors mean-revert in a way the RW ignores.
-
-
 # ==============================================================================
 # QUESTION 4 - KALMAN-FILTER STATE-SPACE MODEL (one-step dynamic Nelson-Siegel)
 # ==============================================================================
 
-# TASK 1 - DIFFERENCE BETWEEN THE TWO APPROACHES (written answer in comments):
+# TASK 1 - DIFFERENCE BETWEEN THE TWO APPROACHES:
 #   TWO-STEP OLS (Questions 2-3): first estimate the factors month-by-month by
 #     OLS treating them as observed, THEN fit a separate VAR to those estimates.
 #     Simple and fast, but it ignores (a) the estimation error in the factors and
 #     (b) the feedback between measurement noise and factor dynamics; the two
 #     steps are not jointly optimal.
-#   ONE-STEP KALMAN (this question): factors are LATENT states. The measurement
+#   ONE-STEP KALMAN: factors are LATENT states. The measurement
 #     equation (yields = loadings * factors + noise) and the transition equation
 #     (factor VAR(1) dynamics) are estimated JOINTLY by maximum likelihood. The
 #     Kalman filter optimally combines the cross-section of yields with the time
 #     dynamics, propagates uncertainty, and yields smoother, more efficient
 #     factor estimates and internally consistent forecasts.
 
-# Model (with DIAGONAL Q and DIAGONAL H, as required):
+# Model (with DIAGONAL Q and DIAGONAL H):
 #   Measurement: y_t      = Lambda * f_t + eps_t,        eps_t ~ N(0, H), H diagonal
 #   Transition : f_t - mu = A (f_{t-1} - mu) + eta_t,    eta_t ~ N(0, Q), Q diagonal
-# For transparency and stability we use a DIAGONAL A (each factor an AR(1)); this
-# keeps the parameter count small and the optimisation robust, while still letting
-# the three factors have different persistence. (A is the only restriction beyond
-# the diagonal Q/H asked by the text; we flag it explicitly.)
+# We use a DIAGONAL A (each factor an independent AR(1)) and estimate the model
+# with the dlm package (Petris, "Dynamic Linear Models with R"), the standard R
+# package for linear Gaussian state-space models. dlm runs the Kalman filter and
+# its likelihood for us, so we do NOT code the filter by hand.
+# install.packages("dlm")   # run once if dlm is not installed yet
+library(dlm)
 
-# WHAT: a hand-coded Kalman filter that returns the log-likelihood AND, on request,
-#       the filtered factors f_{t|t}.
-# Parameter vector 'par' (length 17), all variances stored as LOGS to stay positive:
-#   par[1:3]   = a   : diagonal AR(1) coefficients of A
-#   par[4:6]   = mu  : unconditional means of the three factors
-#   par[7:9]   = log(diag(Q))  (3 state-noise variances)
-#   par[10:17] = log(diag(H))  (8 measurement-noise variances)
-kalman_dns <- function(par, Y, L, return_states = FALSE) {
-  m <- 3; N <- ncol(Y); Tn <- nrow(Y)
-  a  <- par[1:3]
-  mu <- par[4:6]
-  Q  <- diag(exp(par[7:9]),  m)
-  H  <- diag(exp(par[10:17]), N)
-  A  <- diag(a, m)
-  
-  # Diffuse-free stationary initialisation: for a diagonal AR(1) the unconditional
-  # state mean is mu and the unconditional variance solves P = A P A' + Q elementwise.
-  f <- mu
-  P <- diag(exp(par[7:9]) / pmax(1 - a^2, 1e-6), m)
-  
-  ll <- 0
-  states <- matrix(NA_real_, Tn, m)
-  for (t in 1:Tn) {
-    # --- PREDICT: project the state one step ahead ---
-    f_pred <- mu + A %*% (f - mu)
-    P_pred <- A %*% P %*% t(A) + Q
-    # --- INNOVATION: how surprising is today's yield cross-section ---
-    v <- matrix(Y[t, ], N, 1) - L %*% f_pred
-    S <- L %*% P_pred %*% t(L) + H
-    Sinv <- solve(S)
-    # accumulate the Gaussian log-likelihood of the innovation
-    ll <- ll - 0.5 * (N * log(2 * pi) + log(det(S)) + t(v) %*% Sinv %*% v)
-    # --- UPDATE: blend prediction with new information (Kalman gain K) ---
-    K <- P_pred %*% t(L) %*% Sinv
-    f <- f_pred + K %*% v
-    P <- (diag(m) - K %*% L) %*% P_pred
-    states[t, ] <- f
-  }
-  if (return_states) return(states)
-  as.numeric(-ll)                                 # negative log-likelihood for minimisation
+# The long-run factor mean mu is fixed at the average of the OLS factors (a
+# standard "concentration" step). Working with the factors in deviation from the
+# mean, g_t = f_t - mu, gives a zero-mean AR(1): g_t = A g_{t-1} + eta. Subtracting
+# Lambda*mu from the yields then leaves a clean state-space with no intercept term,
+# which is exactly the form the dlm package expects.
+mu_hat   <- colMeans(F)                         # fixed factor means (level, slope, curvature)
+mean_yld <- as.numeric(L %*% mu_hat)            # average yield implied at each maturity
+Y_dm     <- sweep(Y, 2, mean_yld, "-")          # demeaned yields (T x N): the data for the filter
+
+# build() returns a dlm object for a given parameter vector:
+#   FF = Lambda (loadings)      GG = diag(A)  (factor persistence)
+#   V  = diag(H) (8 measurement variances)    W = diag(Q) (3 state-shock variances)
+# AR(1) coefficients are kept inside (-1,1) with tanh(); variances are kept
+# positive with exp(). So all 14 parameters are unconstrained for the optimiser.
+build_dns <- function(par) {
+  a <- tanh(par[1:3])                           # 3 AR(1) persistences in (-1,1)
+  q <- exp(par[4:6])                            # 3 state-shock variances (diag Q)
+  h <- exp(par[7:14])                           # 8 measurement variances (diag H)
+  dlm(FF = L, GG = diag(a), W = diag(q),
+      V  = diag(h),
+      m0 = rep(0, 3),                           # demeaned factors start at 0
+      C0 = diag(q / (1 - a^2)))                 # stationary initial variance of an AR(1)
 }
 
-# WHAT: informed starting values taken from the two-step results of Q2/Q3.
-# WHY : good starts make the 17-parameter likelihood optimisation fast and stable.
-ar1 <- function(x) coef(lm(x[-1] ~ x[-length(x)]))[2]   # quick AR(1) coefficient
-a0  <- pmin(pmax(apply(F, 2, ar1), -0.95), 0.99)        # persistence of each factor
-mu0 <- colMeans(F)                                      # mean of each factor
-q0  <- apply(F, 2, function(x) var(diff(x)))            # rough state-noise variance
-h0  <- rmse_mat^2                                       # measurement variance = Q2 fitting variance
-par0 <- c(a0, mu0, log(q0), log(h0))
+# Informed starting values from the Q2/Q3 two-step results (fast, stable MLE).
+ar1  <- function(x) coef(lm(x[-1] ~ x[-length(x)]))[2]   # quick AR(1) coefficient
+a0   <- pmin(pmax(apply(F, 2, ar1), -0.95), 0.95)        # persistence of each factor
+q0   <- apply(F, 2, function(x) var(diff(x)))            # rough state-noise variance
+h0   <- rmse_mat^2                                       # measurement variance = Q2 fitting variance
+par0 <- c(atanh(a0), log(q0), log(h0))                   # 14 starting parameters
 
-# TASK 2 - estimate the model by maximum likelihood on the SAME training window
-# used for the VAR (so the out-of-sample comparison is fair and look-ahead free).
-lower <- c(rep(-0.999, 3), rep(-Inf, 3), rep(-20, 3), rep(-20, 8))
-upper <- c(rep( 0.999, 3), rep( Inf, 3), rep( 10, 3), rep( 10, 8))
-fit_kf <- optim(par0, kalman_dns, Y = Y[1:n_train, , drop = FALSE], L = L,
-                method = "L-BFGS-B", lower = lower, upper = upper,
-                control = list(maxit = 500))
-par_hat <- fit_kf$par
+# TASK 2 - estimate the parameters by maximum likelihood on the SAME training
+# window used for the VAR (so the comparison is fair and look-ahead free).
+# dlmMLE maximises the Kalman-filter likelihood internally.
+fit_kf  <- dlmMLE(Y_dm[1:n_train, ], parm = par0, build = build_dns,
+                  method = "BFGS", control = list(maxit = 500))
+mod_hat <- build_dns(fit_kf$par)                # the fitted state-space model
+a_hat   <- tanh(fit_kf$par[1:3])                # estimated factor persistences (diag A)
+
 cat("\n================ Kalman filter estimates (Question 4) ================\n")
-cat("Factor persistences (diag A):", round(par_hat[1:3], 3), "\n")
-cat("Factor means (mu)           :", round(par_hat[4:6], 3), "\n")
+cat("Factor persistences (diag A):", round(a_hat, 3), "\n")
+cat("Factor means (mu)           :", round(mu_hat, 3), "\n")
 
-# TASK 3 - filtered factors over the FULL sample (states updated recursively with
-# fixed estimated parameters) and their plot.
-kf_states <- kalman_dns(par_hat, Y, L, return_states = TRUE)
+# TASK 3 - filtered factors over the FULL sample. dlmFilter() runs the Kalman
+# filter with the fixed estimated parameters and returns the filtered states in
+# $m (its first row is the time-0 prior, so we drop it). We add mu back to put the
+# factors on their original level/slope/curvature scale.
+filt      <- dlmFilter(Y_dm, mod_hat)
+kf_states <- sweep(filt$m[-1, , drop = FALSE], 2, mu_hat, "+")   # T x 3 filtered factors
 kf_factors <- xts(kf_states, order.by = index(yields))
 colnames(kf_factors) <- c("level", "slope", "curvature")
 
@@ -421,7 +366,7 @@ par(mfrow = c(1, 1))
 # WHAT: with fixed estimated parameters, at each origin t the filter has produced
 #       f_{t|t} using data up to t only; the h-step forecast of a diagonal-A AR(1)
 #       state is f_{t+h|t} = mu + A^h (f_{t|t} - mu), mapped to yields by Lambda.
-a_hat  <- par_hat[1:3]; mu_hat <- par_hat[4:6]
+#       a_hat and mu_hat were estimated above with dlm.
 err_kf <- err_var                                 # same dimensions/origins as the VAR errors
 for (i in seq_along(origins)) {
   t0   <- origins[i]
